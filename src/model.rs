@@ -334,3 +334,47 @@ impl Adam {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn causal_mask_prevents_future_leakage() {
+        let model = Model::new(vec!['a', 'b', 'c'], 10);
+        let mut tape_a = Tape::new();
+        let params_a: Vec<Var> = model.weights.iter().map(|&w| tape_a.leaf(w)).collect();
+        let left = model.forward(&mut tape_a, &params_a, &[0, 1, 0]);
+        let first_a: Vec<f32> = left[0].iter().map(|&v| tape_a.value(v)).collect();
+        let mut tape_b = Tape::new();
+        let params_b: Vec<Var> = model.weights.iter().map(|&w| tape_b.leaf(w)).collect();
+        let right = model.forward(&mut tape_b, &params_b, &[0, 2, 2]);
+        let first_b: Vec<f32> = right[0].iter().map(|&v| tape_b.value(v)).collect();
+        assert_eq!(first_a, first_b); // Changing future tokens cannot affect position 0.
+    }
+
+    #[test]
+    fn checkpoint_roundtrip() {
+        let model = Model::new(vec!['a', 'b', ' '], 23);
+        let path = std::env::temp_dir().join(format!("tiny-rust-transformer-test-{}.txt", std::process::id()));
+        model.save(path.to_str().unwrap()).unwrap();
+        let loaded = Model::load(path.to_str().unwrap()).unwrap();
+        assert_eq!(model.vocab, loaded.vocab);
+        for (original, restored) in model.weights.iter().zip(&loaded.weights) {
+            assert!((original - restored).abs() < 1e-8);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn training_reduces_loss_on_repeated_example() {
+        let mut model = Model::new(vec!['a', 'b'], 5);
+        let mut adam = Adam::new(model.parameter_count());
+        let inputs = [0, 1, 0, 1];
+        let targets = [1, 0, 1, 0];
+        let start = model.train_one(&inputs, &targets, &mut adam, 0.005);
+        let mut end = start;
+        for _ in 0..50 { end = model.train_one(&inputs, &targets, &mut adam, 0.005); }
+        assert!(end < start, "Loss failed to decrease: {start} -> {end}");
+    }
+}
