@@ -1,0 +1,8 @@
+[package]
+name = "tiny-rust-transformer"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny, dependency-free causal Transformer language model for learning Rust"
+
+[dependencies]
+# Intentionally empty: the neural network and autodiff are written in Rust.
