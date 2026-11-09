@@ -2,6 +2,7 @@
 //! Later pull requests add the Transformer and its training loop.
 
 mod random;
+mod autograd;
 
 use std::collections::BTreeSet;
 
