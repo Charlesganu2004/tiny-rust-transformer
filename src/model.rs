@@ -192,4 +192,70 @@ impl Model {
         }
         all_logits
     }
+
+    // Cross entropy = log(sum(exp(logits))) - logit[correct_character].
+    fn cross_entropy(tape: &mut Tape, logits: &[Var], target: usize) -> Var {
+        let max = logits.iter().map(|&x| tape.value(x)).fold(f32::NEG_INFINITY, f32::max);
+        let shift = tape.leaf(max); // Stability; treated as a constant for gradients.
+        let mut sum = tape.leaf(0.0);
+        for &logit in logits {
+            let shifted = tape.sub(logit, shift);
+            let exp = tape.exp(shifted);
+            sum = tape.add(sum, exp);
+        }
+        let log_sum = tape.ln(sum);
+        let log_normalizer = tape.add(log_sum, shift);
+        tape.sub(log_normalizer, logits[target])
+    }
+
+    // One complete update: forward -> loss -> backward -> optimizer step.
+    pub fn train_one(&mut self, inputs: &[usize], targets: &[usize], adam: &mut Adam, rate: f32) -> f32 {
+        assert_eq!(inputs.len(), targets.len());
+        let mut tape = Tape::new();
+        let parameters: Vec<Var> = self.weights.iter().map(|&w| tape.leaf(w)).collect();
+        let logits = self.forward(&mut tape, &parameters, inputs);
+        let mut loss = tape.leaf(0.0);
+        for (row, &correct) in logits.iter().zip(targets) {
+            let penalty = Self::cross_entropy(&mut tape, row, correct);
+            loss = tape.add(loss, penalty);
+        }
+        let loss = tape.scale(loss, 1.0 / inputs.len() as f32);
+        let loss_value = tape.value(loss);
+        tape.backward(loss);
+        let gradients: Vec<f32> = parameters.iter().map(|&p| tape.grad(p)).collect();
+        adam.update(&mut self.weights, &gradients, rate);
+        loss_value
+    }
 }
+
+// Adam optimizer keeps an exponential average of gradients and squared gradients.
+pub struct Adam {
+    first: Vec<f32>,
+    second: Vec<f32>,
+    step: i32,
+}
+
+impl Adam {
+    pub fn new(count: usize) -> Self {
+        Self { first: vec![0.0; count], second: vec![0.0; count], step: 0 }
+    }
+
+    pub fn update(&mut self, weights: &mut [f32], gradients: &[f32], learning_rate: f32) {
+        self.step += 1;
+        let norm = gradients.iter().map(|g| g * g).sum::<f32>().sqrt();
+        let clip = if norm > 1.0 { 1.0 / norm } else { 1.0 };
+        let beta1 = 0.9_f32;
+        let beta2 = 0.999_f32;
+        let correction1 = 1.0 - beta1.powi(self.step);
+        let correction2 = 1.0 - beta2.powi(self.step);
+        for i in 0..weights.len() {
+            let g = gradients[i] * clip;
+            self.first[i] = beta1 * self.first[i] + (1.0 - beta1) * g;
+            self.second[i] = beta2 * self.second[i] + (1.0 - beta2) * g * g;
+            let mean = self.first[i] / correction1;
+            let variance = self.second[i] / correction2;
+            weights[i] -= learning_rate * mean / (variance.sqrt() + 1e-8);
+        }
+    }
+}
+
