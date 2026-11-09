@@ -3,6 +3,7 @@
 
 mod random;
 mod autograd;
+mod model;
 
 use std::collections::BTreeSet;
 
