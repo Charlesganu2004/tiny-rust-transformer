@@ -226,6 +226,82 @@ impl Model {
         adam.update(&mut self.weights, &gradients, rate);
         loss_value
     }
+
+    // Generate one character at a time from the most recent CONTEXT characters.
+    pub fn generate(&self, prompt: &str, length: usize, temperature: f32, seed: u64) -> Result<String, String> {
+        if prompt.is_empty() { return Err("Prompt cannot be empty".to_string()); }
+        if temperature <= 0.0 { return Err("Temperature must be positive".to_string()); }
+        let mut ids = Vec::new();
+        for ch in prompt.chars() {
+            let id = self.vocab.iter().position(|&known| known == ch)
+                .ok_or_else(|| format!("Unknown character {:?}; edit the corpus and retrain", ch))?;
+            ids.push(id);
+        }
+        let mut text = prompt.to_string();
+        let mut rng = Random::new(seed);
+        for _ in 0..length {
+            let start = ids.len().saturating_sub(CONTEXT);
+            let window = &ids[start..];
+            let mut tape = Tape::new();
+            let parameters: Vec<Var> = self.weights.iter().map(|&w| tape.leaf(w)).collect();
+            let logits = self.forward(&mut tape, &parameters, window);
+            let last = logits.last().expect("Nonempty prompt");
+            let scores: Vec<f32> = last.iter().map(|&v| tape.value(v) / temperature).collect();
+            let next = sample_index(&scores, &mut rng);
+            ids.push(next);
+            text.push(self.vocab[next]);
+        }
+        Ok(text)
+    }
+
+    // Simple human-readable checkpoint: header, Unicode characters, and weights.
+    pub fn save(&self, path: &str) -> Result<(), String> {
+        let mut text = format!("TINY_RUST_TRANSFORMER_V1\n{}\n", self.vocab.len());
+        for &ch in &self.vocab { text.push_str(&format!("{} ", ch as u32)); }
+        text.push('\n');
+        text.push_str(&format!("{}\n", self.weights.len()));
+        for &w in &self.weights { text.push_str(&format!("{w:.9}\n")); }
+        std::fs::write(path, text).map_err(|error| error.to_string())
+    }
+
+    pub fn load(path: &str) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        let mut fields = text.split_whitespace();
+        if fields.next() != Some("TINY_RUST_TRANSFORMER_V1") {
+            return Err("Not a Tiny Rust Transformer checkpoint".to_string());
+        }
+        let n: usize = parse_next(&mut fields)?;
+        let mut vocab = Vec::with_capacity(n);
+        for _ in 0..n {
+            let code: u32 = parse_next(&mut fields)?;
+            vocab.push(char::from_u32(code).ok_or("Invalid Unicode character")?);
+        }
+        let count: usize = parse_next(&mut fields)?;
+        let mut model = Self::new(vocab, 1); // Builds the same parameter layout.
+        if count != model.weights.len() { return Err("Checkpoint shape mismatch".to_string()); }
+        for w in &mut model.weights { *w = parse_next(&mut fields)?; }
+        Ok(model)
+    }
+}
+
+// Helper for converting space-separated checkpoint fields into Rust numbers.
+fn parse_next<T: std::str::FromStr>(parts: &mut std::str::SplitWhitespace<'_>) -> Result<T, String>
+where T::Err: std::fmt::Display {
+    let raw = parts.next().ok_or_else(|| "Checkpoint ended early".to_string())?;
+    raw.parse::<T>().map_err(|error| error.to_string())
+}
+
+// Convert logits to probabilities, then sample using a random number.
+fn sample_index(logits: &[f32], rng: &mut Random) -> usize {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exp: Vec<f32> = logits.iter().map(|&x| (x - max).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    let mut threshold = rng.next_f32() * sum;
+    for (index, probability) in exp.iter().enumerate() {
+        threshold -= probability;
+        if threshold <= 0.0 { return index; }
+    }
+    logits.len() - 1
 }
 
 // Adam optimizer keeps an exponential average of gradients and squared gradients.
@@ -258,4 +334,3 @@ impl Adam {
         }
     }
 }
-
