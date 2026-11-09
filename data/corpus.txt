@@ -1,0 +1,10 @@
+rust builds tiny language models.
+rust predicts the next character.
+rust learns from text examples.
+a transformer uses attention.
+attention sees earlier characters.
+neural networks learn useful patterns.
+the model reads words and makes guesses.
+rust makes fast and safe software.
+we train a very small transformer.
+the transformer predicts text.
